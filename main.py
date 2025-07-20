@@ -10,11 +10,17 @@ from google.oauth2 import service_account
 from posthog import Posthog
 import numpy as np
 
-# Initialize PostHog
-posthog = Posthog(
-    project_api_key='phc_iY1kjQZ5ib5oy0PU2fRIqJZ5323jewSS5fVDNyhe7RY',
-    host='https://us.i.posthog.com'
-)
+# Initialize PostHog with error handling
+try:
+    posthog = Posthog(
+        project_api_key='phc_iY1kjQZ5ib5oy0PU2fRIqJZ5323jewSS5fVDNyhe7RY',
+        host='https://us.i.posthog.com'
+    )
+    POSTHOG_ENABLED = True
+except Exception as e:
+    print(f"PostHog initialization failed: {e}")
+    posthog = None
+    POSTHOG_ENABLED = False
 
 # Authentication credentials (same as pipeline_matcher)
 CREDENTIALS = {
@@ -34,7 +40,6 @@ CREDENTIALS = {
     "mohanad.elgarhy@sylndr.com": hashlib.sha256("sylndr123".encode()).hexdigest(),
 }
 
-
 def check_password():
     """Returns `True` if the user had the correct password."""
 
@@ -47,25 +52,29 @@ def check_password():
             st.session_state["current_user"] = st.session_state["username"]  # Store the username
 
             # First identify the user
-            posthog.identify(
-                st.session_state["username"],  # Use email as distinct_id
-                {
-                    'email': st.session_state["username"],
-                    'name': st.session_state["username"].split('@')[0].replace('.', ' ').title(),
-                    'last_login': datetime.now().isoformat()
-                }
-            )
+            if POSTHOG_ENABLED and posthog:
+                try:
+                    posthog.identify(
+                        st.session_state["username"],  # Use email as distinct_id
+                        {
+                            'email': st.session_state["username"],
+                            'name': st.session_state["username"].split('@')[0].replace('.', ' ').title(),
+                            'last_login': datetime.now().isoformat()
+                        }
+                    )
 
-            # Then capture the login event
-            posthog.capture(
-                st.session_state["username"],
-                '$login',
-                {
-                    'app': 'Showroom Matcher',
-                    'login_method': 'password',
-                    'success': True
-                }
-            )
+                    # Then capture the login event
+                    posthog.capture(
+                        st.session_state["username"],
+                        '$login',
+                        {
+                            'app': 'Showroom Matcher',
+                            'login_method': 'password',
+                            'success': True
+                        }
+                    )
+                except Exception as e:
+                    print(f"PostHog tracking failed: {e}")
 
             del st.session_state["password"]  # Don't store the password
             del st.session_state["username"]  # Don't store the username
@@ -86,7 +95,6 @@ def check_password():
 
     return False
 
-
 # Set page config
 st.set_page_config(
     page_title="Showroom Matcher - Car to Dealer Showroom Matching",
@@ -96,7 +104,7 @@ st.set_page_config(
 
 # Main app logic
 if check_password():
-
+    
     # Define car groups by origin (same as pipeline_matcher)
     CAR_GROUPS = {
         'Japanese': ['Toyota', 'Honda', 'Nissan', 'Mazda', 'Subaru', 'Mitsubishi', 'Lexus', 'Infiniti', 'Acura'],
@@ -111,14 +119,12 @@ if check_password():
         'Czech': ['Skoda']
     }
 
-
     def get_car_group(make):
         """Get the origin group for a car make"""
         for group, makes in CAR_GROUPS.items():
             if make in makes:
                 return group
         return 'Other'
-
 
     def get_mileage_segment(km):
         """Get mileage segment for a car"""
@@ -134,7 +140,6 @@ if check_password():
             return "90K-120K"
         else:
             return "120K+"
-
 
     def get_price_segment(price):
         """Get price segment for a car"""
@@ -157,7 +162,6 @@ if check_password():
         else:
             return "2.1M+"
 
-
     def get_year_segment(year):
         """Get year segment for a car"""
         if pd.isna(year):
@@ -172,7 +176,6 @@ if check_password():
             return "2022-2024"
         else:
             return None  # Outside defined ranges
-
 
     @st.cache_data(ttl=21600)  # Cache data for 6 hours
     def load_showroom_data():
@@ -626,8 +629,8 @@ if check_password():
         if not showroom_performance_df.empty:
             showroom_performance_df['request_date'] = pd.to_datetime(showroom_performance_df['request_date'])
             # Convert numeric columns
-            showroom_numeric_columns = ['days_from_last_request', 'showroom_requests_count',
-                                        'succ_showroom_requests', 'sold_in_showroom', 'days_to_sold_in_showroom']
+            showroom_numeric_columns = ['days_from_last_request', 'showroom_requests_count', 
+                                      'succ_showroom_requests', 'sold_in_showroom', 'days_to_sold_in_showroom']
             for col in showroom_numeric_columns:
                 if col in showroom_performance_df.columns:
                     showroom_performance_df[col] = pd.to_numeric(showroom_performance_df[col], errors='coerce')
@@ -674,26 +677,25 @@ if check_password():
 
         return inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df
 
-
     def calculate_showroom_score(dealer_code, showroom_performance_df):
         """Calculate showroom performance score for a dealer (40 points total)"""
-
+        
         dealer_data = showroom_performance_df[showroom_performance_df['dealer_code'] == dealer_code]
-
+        
         if dealer_data.empty:
             return 0, {}
-
+        
         dealer_row = dealer_data.iloc[0]
         total_score = 0
         score_breakdown = {}
-
+        
         # Showroom selling rate (20 points) - (sold_in_showroom / succ_showroom_requests)
         succ_showroom_requests = dealer_row.get('succ_showroom_requests', 0)
         sold_in_showroom = dealer_row.get('sold_in_showroom', 0)
-
+        
         if succ_showroom_requests > 0:
             selling_rate = (sold_in_showroom / succ_showroom_requests) * 100
-
+            
             if selling_rate > 20:
                 selling_rate_score = 20
             elif selling_rate >= 15:
@@ -707,10 +709,10 @@ if check_password():
         else:
             selling_rate = 0
             selling_rate_score = 0
-
+        
         score_breakdown['Selling Rate'] = selling_rate_score
         total_score += selling_rate_score
-
+        
         # Days to sell in showroom (10 points) - (days_to_sold_in_showroom)
         days_to_sell = dealer_row.get('days_to_sold_in_showroom', None)
         if pd.notna(days_to_sell) and days_to_sell > 0:
@@ -724,10 +726,10 @@ if check_password():
                 days_score = 0
         else:
             days_score = 0
-
+        
         score_breakdown['Days to Sell'] = days_score
         total_score += days_score
-
+        
         # Days from last request (10 points) - (days_from_last_request)
         # More days = more points (less recent activity = higher availability)
         days_from_last = dealer_row.get('days_from_last_request', None)
@@ -738,15 +740,13 @@ if check_password():
                 days_from_last_score = 5
         else:
             days_from_last_score = 0
-
+        
         score_breakdown['Days from Last Request'] = days_from_last_score
         total_score += days_from_last_score
-
+        
         return total_score, score_breakdown
 
-
-    def calculate_inventory_match_score(car, dealer_code, historical_df, recent_views_df, recent_filters_df,
-                                        dealer_requests_df, olx_df):
+    def calculate_inventory_match_score(car, dealer_code, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df):
         """Calculate how well an inventory car matches a dealer's preferences (full version from pipeline_matcher)"""
 
         total_score = 0
@@ -1094,61 +1094,59 @@ if check_password():
 
         return total_score, score_breakdown
 
-
-    def generate_showroom_matches(inventory_df, showroom_performance_df, historical_df, recent_views_df,
-                                  recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df):
+    def generate_showroom_matches(inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df):
         """Generate showroom matches for all cars and dealers"""
-
+        
         matches = []
-
+        
         # Get all unique dealers from showroom performance data
         all_dealers = showroom_performance_df['dealer_code'].unique() if not showroom_performance_df.empty else []
-
+        
         # Process each car
         for _, car in inventory_df.iterrows():
             # Check if car has valid data
             if (pd.notna(car['make']) and pd.notna(car['model']) and
-                    pd.notna(car['year']) and pd.notna(car['kilometers']) and
-                    pd.notna(car['App_price'])):
-
+                pd.notna(car['year']) and pd.notna(car['kilometers']) and
+                pd.notna(car['App_price'])):
+                
                 # Get car location
                 car_location = "Unknown"
                 if not location_df.empty:
                     location_info = location_df[location_df['car_name'] == car['sf_vehicle_name']]
                     if not location_info.empty:
                         car_location = location_info['location_stage_name'].iloc[0]
-
+                
                 # Calculate scores for each dealer
                 for dealer_code in all_dealers:
                     if pd.isna(dealer_code):
                         continue
-
+                    
                     # Get dealer name
                     dealer_info = showroom_performance_df[showroom_performance_df['dealer_code'] == dealer_code]
                     dealer_name = dealer_info['dealer_name'].iloc[0] if not dealer_info.empty else "Unknown"
-
+                    
                     # Check if dealer has requested this car
                     requested = "No"
                     days_in_location = 0
                     if not current_showroom_df.empty:
                         dealer_request = current_showroom_df[
-                            (current_showroom_df['dealer_code'] == dealer_code) &
+                            (current_showroom_df['dealer_code'] == dealer_code) & 
                             (current_showroom_df['car_name'] == car['sf_vehicle_name'])
-                            ]
+                        ]
                         if not dealer_request.empty:
                             requested = "Yes"
                             days_in_location = dealer_request['days_on_hand'].iloc[0]
-
+                    
                     # Calculate match score
                     match_score, match_breakdown = calculate_inventory_match_score(
                         car, dealer_code, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df
                     )
-
+                    
                     # Calculate showroom score
                     showroom_score, showroom_breakdown = calculate_showroom_score(
                         dealer_code, showroom_performance_df
                     )
-
+                    
                     # Only include if there's some relevance
                     if match_score > 10 or showroom_score > 10:
                         matches.append({
@@ -1175,9 +1173,8 @@ if check_password():
                             'year_segment': get_year_segment(car['year']),
                             'mileage_segment': get_mileage_segment(car['kilometers'])
                         })
-
+        
         return matches
-
 
     def show_methodology():
         """Display methodology explanation in an expander"""
@@ -1193,19 +1190,19 @@ if check_password():
             - **Mileage Segment** (5 pts max): If dealer bought cars in same mileage segment (0-30K, 30K-60K, 60K-90K, 90K-120K, 120K+)
 
             #### **🏪 Showroom Performance Score (40 points total)**
-
+            
             **Showroom Selling Rate (20 points)** - `sold_in_showroom / succ_showroom_requests`
             - 1-10%: 5 points
             - 10-15%: 10 points  
             - 15-20%: 15 points
             - >20%: 20 points
-
+            
             **Days to Sell in Showroom (10 points)** - `days_to_sold_in_showroom`
             - 0-7 days: 10 points
             - 7-10 days: 7 points
             - 10-15 days: 5 points
             - >15 days: 0 points
-
+            
             **Days from Last Request (10 points)** - `days_from_last_request` (higher = more available)
             - 0-14 days: 5 points
             - >14 days: 10 points
@@ -1220,27 +1217,29 @@ if check_password():
             - 🟢 **High Potential (60+)**: Strong showroom performance + excellent match
             - 🟡 **Medium Potential (40-59)**: Good potential with moderate performance
             - 🔴 **Low Potential (20-39)**: Some relevance but lower priority
-
+            
             **Maximum Total Score: 160 points** (120 Match + 40 Showroom)
             """)
 
-
     def main():
         st.title("🏪 Showroom Matcher - Car to Dealer Showroom Matching")
-
+        
         # Add methodology explanation
         show_methodology()
 
         # Track page view
-        if "current_user" in st.session_state:
-            posthog.capture(
-                st.session_state["current_user"],
-                'page_view',
-                {
-                    'page': 'showroom_matcher',
-                    'timestamp': datetime.now().isoformat()
-                }
-            )
+        if "current_user" in st.session_state and POSTHOG_ENABLED and posthog:
+            try:
+                posthog.capture(
+                    st.session_state["current_user"],
+                    'page_view',
+                    {
+                        'page': 'showroom_matcher',
+                        'timestamp': datetime.now().isoformat()
+                    }
+                )
+            except Exception as e:
+                print(f"PostHog page view tracking failed: {e}")
 
         # Load data
         with st.spinner("Loading inventory and showroom data..."):
@@ -1255,15 +1254,12 @@ if check_password():
         with col1:
             st.metric("Available Cars", len(inventory_df))
         with col2:
-            unique_dealers = len(
-                showroom_performance_df['dealer_code'].unique()) if not showroom_performance_df.empty else 0
+            unique_dealers = len(showroom_performance_df['dealer_code'].unique()) if not showroom_performance_df.empty else 0
             st.metric("Matched Dealers", unique_dealers)
 
         # Generate showroom matches
         with st.spinner("Calculating showroom matches..."):
-            matches = generate_showroom_matches(inventory_df, showroom_performance_df, historical_df, recent_views_df,
-                                                recent_filters_df, dealer_requests_df, olx_df, location_df,
-                                                current_showroom_df)
+            matches = generate_showroom_matches(inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df)
 
         if not matches:
             st.warning("No showroom matches found.")
@@ -1282,12 +1278,12 @@ if check_password():
             # Car filter with enhanced display format
             car_options = ["All Cars"]
             car_display_map = {}
-
+            
             for _, row in matches_df.drop_duplicates('car_code').iterrows():
                 car_display = f"{row['car_code']} - {row['make']} {row['model']} {row['year']} ({row['doa']:.1f} days, {row['requests_count']} requests)"
                 car_options.append(car_display)
                 car_display_map[car_display] = row['car_code']
-
+            
             selected_car_display = st.selectbox("Select Car:", car_options)
             selected_car = car_display_map.get(selected_car_display, "All Cars")
 
@@ -1323,8 +1319,7 @@ if check_password():
             # Prepare display DataFrame
             display_df = filtered_df[[
                 'car_code', 'price', 'model', 'make', 'year', 'kilometers', 'location',
-                'requested', 'days_in_location', 'dealer_name', 'dealer_code', 'match_score', 'showroom_score',
-                'total_score'
+                'requested', 'days_in_location', 'dealer_name', 'dealer_code', 'match_score', 'showroom_score', 'total_score'
             ]].copy()
 
             # Add match level
@@ -1335,8 +1330,7 @@ if check_password():
             # Format columns
             display_df['price'] = display_df['price'].apply(lambda x: f"EGP {x:,.0f}")
             display_df['kilometers'] = display_df['kilometers'].apply(lambda x: f"{x:,.0f} km")
-            display_df['days_in_location'] = display_df['days_in_location'].apply(
-                lambda x: f"{int(x)} days" if pd.notna(x) and x > 0 else "-")
+            display_df['days_in_location'] = display_df['days_in_location'].apply(lambda x: f"{int(x)} days" if pd.notna(x) and x > 0 else "-")
             display_df['match_score'] = display_df['match_score'].round(1)
             display_df['showroom_score'] = display_df['showroom_score'].round(1)
             display_df['total_score'] = display_df['total_score'].round(1)
@@ -1381,7 +1375,7 @@ if check_password():
 
             # Export functionality
             st.subheader("📥 Export Results")
-
+            
             # Create CSV
             csv_data = display_df.to_csv(index=False)
             st.download_button(
@@ -1393,14 +1387,13 @@ if check_password():
 
             # Detailed analysis for top matches
             st.subheader("📋 Top Matches Analysis")
-
+            
             top_matches = filtered_df.head(10)
-
+            
             for i, (_, match) in enumerate(top_matches.iterrows(), 1):
-                with st.expander(
-                        f"{i}. {match['car_code']} → {match['dealer_name']} (Total: {match['total_score']:.1f})"):
+                with st.expander(f"{i}. {match['car_code']} → {match['dealer_name']} (Total: {match['total_score']:.1f})"):
                     col1, col2 = st.columns(2)
-
+                    
                     with col1:
                         st.write("**Car Details:**")
                         st.write(f"• Code: {match['car_code']}")
@@ -1413,7 +1406,7 @@ if check_password():
                         if match['days_in_location'] > 0:
                             st.write(f"• Days in Location: {match['days_in_location']} days")
                         st.write(f"• Group: {match['car_group']}")
-
+                        
                     with col2:
                         st.write("**Score Breakdown:**")
                         st.write(f"• Match Score: {match['match_score']:.1f}")
@@ -1430,35 +1423,34 @@ if check_password():
         # Summary statistics
         if not matches_df.empty:
             st.subheader("📊 Summary Statistics")
-
+            
             col1, col2, col3 = st.columns(3)
-
+            
             with col1:
                 st.write("**Score Distribution:**")
                 high_matches = len(matches_df[matches_df['total_score'] >= 60])
                 medium_matches = len(matches_df[(matches_df['total_score'] >= 40) & (matches_df['total_score'] < 60)])
                 low_matches = len(matches_df[(matches_df['total_score'] >= 20) & (matches_df['total_score'] < 40)])
-
+                
                 st.write(f"🟢 High (60+): {high_matches}")
                 st.write(f"🟡 Medium (40-59): {medium_matches}")
                 st.write(f"🔴 Low (20-39): {low_matches}")
-
+            
             with col2:
                 st.write("**Top Car Groups:**")
                 group_counts = matches_df['car_group'].value_counts().head(5)
                 for group, count in group_counts.items():
                     st.write(f"• {group}: {count}")
-
+            
             with col3:
                 st.write("**Average Scores:**")
                 avg_match = matches_df['match_score'].mean()
                 avg_showroom = matches_df['showroom_score'].mean()
                 avg_total = matches_df['total_score'].mean()
-
+                
                 st.write(f"• Match Score: {avg_match:.1f}")
                 st.write(f"• Showroom Score: {avg_showroom:.1f}")
                 st.write(f"• Total Score: {avg_total:.1f}")
-
 
     if __name__ == "__main__":
         main()
