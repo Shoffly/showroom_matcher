@@ -177,7 +177,7 @@ if check_password():
         else:
             return None  # Outside defined ranges
 
-    @st.cache_data(ttl=21600)  # Cache data for 6 hours
+    @st.cache_data(ttl=43200)  # Cache data for 12 hours (manual refresh available)
     def load_showroom_data():
         """Load all necessary data for showroom matching"""
         try:
@@ -1095,15 +1095,27 @@ if check_password():
         return total_score, score_breakdown
 
     def generate_showroom_matches(inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df):
-        """Generate showroom matches for all cars and dealers"""
+        """Generate showroom matches for live cars only"""
         
         matches = []
         
         # Get all unique dealers from showroom performance data
         all_dealers = showroom_performance_df['dealer_code'].unique() if not showroom_performance_df.empty else []
         
-        # Process each car
-        for _, car in inventory_df.iterrows():
+        # Filter for only live cars (same logic as Live Cars tab)
+        live_cars = inventory_df.copy()
+        
+        # Apply the same filters as Live Cars tab to ensure consistency
+        # Only include cars that are currently published and available
+        if 'current_status' in live_cars.columns:
+            live_cars = live_cars[live_cars['current_status'].isin(['Published', 'Being Sold'])]
+        
+        # Only include cars with valid publishing state
+        if 'publishing_state' in live_cars.columns:
+            live_cars = live_cars[live_cars['publishing_state'] == 'Wholesale']
+        
+        # Process each live car
+        for _, car in live_cars.iterrows():
             # Check if car has valid data
             if (pd.notna(car['make']) and pd.notna(car['model']) and
                 pd.notna(car['year']) and pd.notna(car['kilometers']) and
@@ -1182,6 +1194,12 @@ if check_password():
             st.markdown("""
             ### 📊 **Scoring Methodology (Total Points: Match Score + Showroom Score)**
 
+            #### **🚗 Live Cars Matching**
+            **Only currently live and available cars are matched** - same cars shown in the Live Cars tab:
+            - Status: "Published" or "Being Sold"
+            - Publishing State: "Wholesale"
+            - Valid make, model, year, kilometers, and price data
+
             #### **🎯 Match Score (Historical Purchase Patterns)**
             - **Exact Model Match** (25 pts max): If dealer bought this exact model before
             - **Same Make Match** (15 pts max): If dealer bought this brand (when no exact model)
@@ -1212,6 +1230,7 @@ if check_password():
             #### **📅 **Data Timeframes:**
             - **Historical Purchases**: Last 12 months
             - **Showroom Performance**: In 2025
+            - **Live Cars**: Currently published and available
 
             #### **🎨 **Result Categories:**
             - 🟢 **High Potential (60+)**: Strong showroom performance + excellent match
@@ -1241,216 +1260,546 @@ if check_password():
             except Exception as e:
                 print(f"PostHog page view tracking failed: {e}")
 
-        # Load data
-        with st.spinner("Loading inventory and showroom data..."):
-            inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df = load_showroom_data()
+        # Initialize session state for caching expensive operations
+        if 'data_loaded' not in st.session_state:
+            st.session_state.data_loaded = False
+            
+        if 'matches_calculated' not in st.session_state:
+            st.session_state.matches_calculated = False
+
+        # Add refresh button and data status
+        col1, col2, col3 = st.columns([1, 2, 3])
+        with col1:
+            if st.button("🔄 Refresh Data", help="Reload data from BigQuery"):
+                # Clear all cached data
+                for key in ['data_loaded', 'matches_calculated', 'live_cars_with_location', 
+                           'inventory_df', 'showroom_performance_df', 'historical_df', 
+                           'recent_views_df', 'recent_filters_df', 'dealer_requests_df', 
+                           'olx_df', 'location_df', 'current_showroom_df', 'matches_df']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.session_state.data_loaded = False
+                st.session_state.matches_calculated = False
+                st.rerun()
+        
+        with col2:
+            # Show data freshness indicator
+            if st.session_state.data_loaded and 'data_load_time' in st.session_state:
+                load_time = st.session_state.data_load_time
+                time_diff = datetime.now() - load_time
+                if time_diff.total_seconds() < 3600:  # Less than 1 hour
+                    minutes_ago = int(time_diff.total_seconds() / 60)
+                    st.info(f"📊 Data loaded {minutes_ago}m ago - **Filtering is now instant!**")
+                else:
+                    hours_ago = int(time_diff.total_seconds() / 3600)
+                    st.info(f"📊 Data loaded {hours_ago}h ago - **Filtering is now instant!**")
+        
+        # Load data only once and cache in session state
+        if not st.session_state.data_loaded:
+            with st.spinner("Loading inventory and showroom data... (This may take a moment)"):
+                inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df = load_showroom_data()
+                
+                # Store in session state
+                st.session_state.inventory_df = inventory_df
+                st.session_state.showroom_performance_df = showroom_performance_df
+                st.session_state.historical_df = historical_df
+                st.session_state.recent_views_df = recent_views_df
+                st.session_state.recent_filters_df = recent_filters_df
+                st.session_state.dealer_requests_df = dealer_requests_df
+                st.session_state.olx_df = olx_df
+                st.session_state.location_df = location_df
+                st.session_state.current_showroom_df = current_showroom_df
+                st.session_state.data_loaded = True
+                st.session_state.data_load_time = datetime.now()
+        else:
+            # Use cached data
+            inventory_df = st.session_state.inventory_df
+            showroom_performance_df = st.session_state.showroom_performance_df
+            historical_df = st.session_state.historical_df
+            recent_views_df = st.session_state.recent_views_df
+            recent_filters_df = st.session_state.recent_filters_df
+            dealer_requests_df = st.session_state.dealer_requests_df
+            olx_df = st.session_state.olx_df
+            location_df = st.session_state.location_df
+            current_showroom_df = st.session_state.current_showroom_df
 
         if inventory_df.empty:
             st.warning("No inventory data available.")
             return
 
         # Display summary metrics
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Available Cars", len(inventory_df))
         with col2:
+            # Count live cars (same logic as matching)
+            live_cars_count = len(inventory_df)
+            if 'current_status' in inventory_df.columns:
+                live_cars_count = len(inventory_df[inventory_df['current_status'].isin(['Published', 'Being Sold'])])
+            if 'publishing_state' in inventory_df.columns:
+                live_cars_count = len(inventory_df[
+                    (inventory_df['current_status'].isin(['Published', 'Being Sold'])) & 
+                    (inventory_df['publishing_state'] == 'Wholesale')
+                ])
+            st.metric("Live Cars Available", live_cars_count)
+        with col3:
             unique_dealers = len(showroom_performance_df['dealer_code'].unique()) if not showroom_performance_df.empty else 0
             st.metric("Matched Dealers", unique_dealers)
 
-        # Generate showroom matches
-        with st.spinner("Calculating showroom matches..."):
-            matches = generate_showroom_matches(inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df)
+        # Generate showroom matches only once and cache in session state
+        if not st.session_state.matches_calculated:
+            with st.spinner("Calculating showroom matches... (One-time calculation)"):
+                matches = generate_showroom_matches(inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df)
+                
+                if not matches:
+                    st.warning("No showroom matches found.")
+                    return
+                
+                # Store matches in session state
+                st.session_state.matches_df = pd.DataFrame(matches)
+                st.session_state.matches_calculated = True
+                
+                # Count unique live cars being matched
+                unique_live_cars = len(st.session_state.matches_df['car_code'].unique())
+                
+                # Show success message
+                st.success(f"✅ **All data loaded and matches calculated! Filtering is now instant.** 🚀\n📊 **{unique_live_cars} live cars** matched with dealers")
+        
+        # Use cached matches
+        matches_df = st.session_state.matches_df
 
-        if not matches:
-            st.warning("No showroom matches found.")
+        # Create main tabs
+        main_tab1, main_tab2 = st.tabs(["🎯 Showroom Matching", "🚗 Live Cars"])
+        
+        with main_tab1:
+            st.subheader("🎯 Showroom Matching Results")
+            st.info("🚗 **Matching only live cars** - same vehicles shown in the Live Cars tab")
+
+            # Filtering section
+            st.write("**Filter Options:** ⚡ *Instant filtering on cached data*")
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                # Car filter with enhanced display format
+                car_options = ["All Cars"]
+                car_display_map = {}
+                
+                for _, row in matches_df.drop_duplicates('car_code').iterrows():
+                    car_display = f"{row['car_code']} - {row['make']} {row['model']} {row['year']} ({row['doa']:.1f} days, {row['requests_count']} requests)"
+                    car_options.append(car_display)
+                    car_display_map[car_display] = row['car_code']
+                
+                selected_car_display = st.selectbox("Select Car:", car_options)
+                selected_car = car_display_map.get(selected_car_display, "All Cars")
+
+            with col2:
+                # Location filter
+                location_options = ["All Locations"] + sorted(list(matches_df['location'].unique()))
+                selected_location = st.selectbox("Select Location:", location_options)
+
+            with col3:
+                # Dealer filter
+                dealer_options = ["All Dealers"] + list(matches_df['dealer_code'].unique())
+                selected_dealer = st.selectbox("Select Dealer:", dealer_options)
+
+            # Apply filters
+            filtered_df = matches_df.copy()
+
+            if selected_car != "All Cars":
+                filtered_df = filtered_df[filtered_df['car_code'] == selected_car]
+
+            if selected_location != "All Locations":
+                filtered_df = filtered_df[filtered_df['location'] == selected_location]
+
+            if selected_dealer != "All Dealers":
+                filtered_df = filtered_df[filtered_df['dealer_code'] == selected_dealer]
+
+            # Sort by total score
+            filtered_df = filtered_df.sort_values('total_score', ascending=False)
+
+            # Display results
+            unique_cars_matched = len(filtered_df['car_code'].unique())
+            st.write(f"**Showing {len(filtered_df)} matches from {unique_cars_matched} live cars:**")
+
+            if not filtered_df.empty:
+                # Prepare display DataFrame
+                display_df = filtered_df[[
+                    'car_code', 'price', 'model', 'make', 'year', 'kilometers', 'location',
+                    'requested', 'days_in_location', 'dealer_name', 'dealer_code', 'match_score', 'showroom_score', 'total_score'
+                ]].copy()
+
+                # Add match level
+                display_df['match_level'] = display_df['total_score'].apply(
+                    lambda x: '🟢 High' if x >= 60 else '🟡 Medium' if x >= 40 else '🔴 Low'
+                )
+
+                # Format columns
+                display_df['price'] = display_df['price'].apply(lambda x: f"EGP {x:,.0f}")
+                display_df['kilometers'] = display_df['kilometers'].apply(lambda x: f"{x:,.0f} km")
+                display_df['days_in_location'] = display_df['days_in_location'].apply(lambda x: f"{int(x)} days" if pd.notna(x) and x > 0 else "-")
+                display_df['match_score'] = display_df['match_score'].round(1)
+                display_df['showroom_score'] = display_df['showroom_score'].round(1)
+                display_df['total_score'] = display_df['total_score'].round(1)
+
+                # Rename columns for display
+                display_df = display_df.rename(columns={
+                    'car_code': 'Car Code',
+                    'price': 'Price',
+                    'model': 'Model',
+                    'make': 'Make',
+                    'year': 'Year',
+                    'kilometers': 'Kilometers',
+                    'location': 'Location',
+                    'requested': 'Requested',
+                    'days_in_location': 'Days in Location',
+                    'dealer_name': 'Dealer Name',
+                    'dealer_code': 'Dealer Code',
+                    'match_score': 'Match Score',
+                    'showroom_score': 'Showroom Score',
+                    'total_score': 'Total Score',
+                    'match_level': 'Level'
+                })
+
+                # Color coding function - only color specific cells, not entire rows
+                def highlight_scores(val):
+                    if val == '🟢 High':
+                        return 'background-color: #90EE90'
+                    elif val == '🟡 Medium':
+                        return 'background-color: #FFE4B5'
+                    elif val == '🔴 Low':
+                        return 'background-color: #FFCCCB'
+                    else:
+                        return ''
+
+                # Display styled dataframe
+                st.dataframe(
+                    display_df.style.applymap(highlight_scores, subset=['Level']),
+                    use_container_width=True
+                )
+
+                st.info("🟢 High Potential (60+) | 🟡 Medium Potential (40-59) | 🔴 Low Potential (20-39)")
+
+                # Export functionality
+                st.subheader("📥 Export Results")
+                
+                # Create CSV
+                csv_data = display_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Results as CSV",
+                    data=csv_data,
+                    file_name=f"showroom_matches_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv"
+                )
+
+                # Detailed analysis for top matches
+                st.subheader("📋 Top Matches Analysis")
+                
+                top_matches = filtered_df.head(10)
+                
+                for i, (_, match) in enumerate(top_matches.iterrows(), 1):
+                    with st.expander(f"{i}. {match['car_code']} → {match['dealer_name']} (Total: {match['total_score']:.1f})"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.write("**Car Details:**")
+                            st.write(f"• Code: {match['car_code']}")
+                            st.write(f"• Make/Model: {match['make']} {match['model']}")
+                            st.write(f"• Year: {match['year']}")
+                            st.write(f"• Kilometers: {match['kilometers']:,.0f} km")
+                            st.write(f"• Price: EGP {match['price']:,.0f}")
+                            st.write(f"• Location: {match['location']}")
+                            st.write(f"• Requested: {match['requested']}")
+                            if match['days_in_location'] > 0:
+                                st.write(f"• Days in Location: {match['days_in_location']} days")
+                            st.write(f"• Group: {match['car_group']}")
+                            
+                        with col2:
+                            st.write("**Score Breakdown:**")
+                            st.write(f"• Match Score: {match['match_score']:.1f}")
+                            for component, score in match['match_breakdown'].items():
+                                st.write(f"  - {component}: {score:.1f}")
+                            st.write(f"• Showroom Score: {match['showroom_score']:.1f}")
+                            for component, score in match['showroom_breakdown'].items():
+                                st.write(f"  - {component}: {score:.1f}")
+                            st.write(f"**Total Score: {match['total_score']:.1f}**")
+
+            else:
+                st.warning("No matches found with the current filters. Try adjusting the filter criteria.")
+
+            # Summary statistics
+            if not matches_df.empty:
+                st.subheader("📊 Summary Statistics")
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.write("**Score Distribution:**")
+                    high_matches = len(matches_df[matches_df['total_score'] >= 60])
+                    medium_matches = len(matches_df[(matches_df['total_score'] >= 40) & (matches_df['total_score'] < 60)])
+                    low_matches = len(matches_df[(matches_df['total_score'] >= 20) & (matches_df['total_score'] < 40)])
+                    
+                    st.write(f"🟢 High (60+): {high_matches}")
+                    st.write(f"🟡 Medium (40-59): {medium_matches}")
+                    st.write(f"🔴 Low (20-39): {low_matches}")
+                
+                with col2:
+                    st.write("**Top Car Groups:**")
+                    group_counts = matches_df['car_group'].value_counts().head(5)
+                    for group, count in group_counts.items():
+                        st.write(f"• {group}: {count}")
+                
+                with col3:
+                    st.write("**Average Scores:**")
+                    avg_match = matches_df['match_score'].mean()
+                    avg_showroom = matches_df['showroom_score'].mean()
+                    avg_total = matches_df['total_score'].mean()
+                    
+                    st.write(f"• Match Score: {avg_match:.1f}")
+                    st.write(f"• Showroom Score: {avg_showroom:.1f}")
+                    st.write(f"• Total Score: {avg_total:.1f}")
+        
+        with main_tab2:
+            # Live Cars tab content - using cached data for fast filtering
+            show_live_cars_tab(st.session_state.inventory_df, st.session_state.location_df)
+
+    def show_live_cars_tab(inventory_df, location_df):
+        """Display the Live Cars tab with filtering functionality"""
+        st.subheader("🚗 Live Cars Inventory")
+        
+        # Track tab view
+        if "current_user" in st.session_state and POSTHOG_ENABLED and posthog:
+            try:
+                posthog.capture(
+                    st.session_state["current_user"],
+                    'tab_view',
+                    {
+                        'tab': 'live_cars',
+                        'timestamp': datetime.now().isoformat()
+                    }
+                )
+            except Exception as e:
+                print(f"PostHog tab view tracking failed: {e}")
+
+        if inventory_df.empty:
+            st.warning("No live cars data available.")
             return
 
-        # Convert to DataFrame for easy filtering
-        matches_df = pd.DataFrame(matches)
-
-        st.subheader("🎯 Showroom Matching Results")
-
-        # Filtering section
-        st.write("**Filter Options:**")
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            # Car filter with enhanced display format
-            car_options = ["All Cars"]
-            car_display_map = {}
-            
-            for _, row in matches_df.drop_duplicates('car_code').iterrows():
-                car_display = f"{row['car_code']} - {row['make']} {row['model']} {row['year']} ({row['doa']:.1f} days, {row['requests_count']} requests)"
-                car_options.append(car_display)
-                car_display_map[car_display] = row['car_code']
-            
-            selected_car_display = st.selectbox("Select Car:", car_options)
-            selected_car = car_display_map.get(selected_car_display, "All Cars")
-
-        with col2:
-            # Location filter
-            location_options = ["All Locations"] + sorted(list(matches_df['location'].unique()))
-            selected_location = st.selectbox("Select Location:", location_options)
-
-        with col3:
-            # Dealer filter
-            dealer_options = ["All Dealers"] + list(matches_df['dealer_code'].unique())
-            selected_dealer = st.selectbox("Select Dealer:", dealer_options)
-
-        # Apply filters
-        filtered_df = matches_df.copy()
-
-        if selected_car != "All Cars":
-            filtered_df = filtered_df[filtered_df['car_code'] == selected_car]
-
-        if selected_location != "All Locations":
-            filtered_df = filtered_df[filtered_df['location'] == selected_location]
-
-        if selected_dealer != "All Dealers":
-            filtered_df = filtered_df[filtered_df['dealer_code'] == selected_dealer]
-
-        # Sort by total score
-        filtered_df = filtered_df.sort_values('total_score', ascending=False)
-
-        # Display results
-        st.write(f"**Showing {len(filtered_df)} matches:**")
-
-        if not filtered_df.empty:
-            # Prepare display DataFrame
-            display_df = filtered_df[[
-                'car_code', 'price', 'model', 'make', 'year', 'kilometers', 'location',
-                'requested', 'days_in_location', 'dealer_name', 'dealer_code', 'match_score', 'showroom_score', 'total_score'
-            ]].copy()
-
-            # Add match level
-            display_df['match_level'] = display_df['total_score'].apply(
-                lambda x: '🟢 High' if x >= 60 else '🟡 Medium' if x >= 40 else '🔴 Low'
-            )
-
-            # Format columns
-            display_df['price'] = display_df['price'].apply(lambda x: f"EGP {x:,.0f}")
-            display_df['kilometers'] = display_df['kilometers'].apply(lambda x: f"{x:,.0f} km")
-            display_df['days_in_location'] = display_df['days_in_location'].apply(lambda x: f"{int(x)} days" if pd.notna(x) and x > 0 else "-")
-            display_df['match_score'] = display_df['match_score'].round(1)
-            display_df['showroom_score'] = display_df['showroom_score'].round(1)
-            display_df['total_score'] = display_df['total_score'].round(1)
-
-            # Rename columns for display
-            display_df = display_df.rename(columns={
-                'car_code': 'Car Code',
-                'price': 'Price',
-                'model': 'Model',
-                'make': 'Make',
-                'year': 'Year',
-                'kilometers': 'Kilometers',
-                'location': 'Location',
-                'requested': 'Requested',
-                'days_in_location': 'Days in Location',
-                'dealer_name': 'Dealer Name',
-                'dealer_code': 'Dealer Code',
-                'match_score': 'Match Score',
-                'showroom_score': 'Showroom Score',
-                'total_score': 'Total Score',
-                'match_level': 'Level'
-            })
-
-            # Color coding function - only color specific cells, not entire rows
-            def highlight_scores(val):
-                if val == '🟢 High':
-                    return 'background-color: #90EE90'
-                elif val == '🟡 Medium':
-                    return 'background-color: #FFE4B5'
-                elif val == '🔴 Low':
-                    return 'background-color: #FFCCCB'
+        try:
+            # Cache the merged live cars data to avoid re-processing
+            if 'live_cars_with_location' not in st.session_state or not st.session_state.data_loaded:
+                # Merge location data only once
+                live_cars_with_location = inventory_df.copy()
+                
+                if not location_df.empty:
+                    live_cars_with_location = live_cars_with_location.merge(
+                        location_df,
+                        left_on='sf_vehicle_name',
+                        right_on='car_name',
+                        how='left'
+                    )
+                    # Fill NaN values in location
+                    live_cars_with_location['location_stage_name'] = live_cars_with_location['location_stage_name'].fillna('Unknown')
                 else:
-                    return ''
+                    live_cars_with_location['location_stage_name'] = 'Unknown'
+                
+                # Cache the processed data
+                st.session_state.live_cars_with_location = live_cars_with_location
+            else:
+                # Use cached processed data
+                live_cars_with_location = st.session_state.live_cars_with_location
 
-            # Display styled dataframe
-            st.dataframe(
-                display_df.style.applymap(highlight_scores, subset=['Level']),
-                use_container_width=True
-            )
-
-            st.info("🟢 High Potential (60+) | 🟡 Medium Potential (40-59) | 🔴 Low Potential (20-39)")
-
-            # Export functionality
-            st.subheader("📥 Export Results")
-            
-            # Create CSV
-            csv_data = display_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Results as CSV",
-                data=csv_data,
-                file_name=f"showroom_matches_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv"
-            )
-
-            # Detailed analysis for top matches
-            st.subheader("📋 Top Matches Analysis")
-            
-            top_matches = filtered_df.head(10)
-            
-            for i, (_, match) in enumerate(top_matches.iterrows(), 1):
-                with st.expander(f"{i}. {match['car_code']} → {match['dealer_name']} (Total: {match['total_score']:.1f})"):
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.write("**Car Details:**")
-                        st.write(f"• Code: {match['car_code']}")
-                        st.write(f"• Make/Model: {match['make']} {match['model']}")
-                        st.write(f"• Year: {match['year']}")
-                        st.write(f"• Kilometers: {match['kilometers']:,.0f} km")
-                        st.write(f"• Price: EGP {match['price']:,.0f}")
-                        st.write(f"• Location: {match['location']}")
-                        st.write(f"• Requested: {match['requested']}")
-                        if match['days_in_location'] > 0:
-                            st.write(f"• Days in Location: {match['days_in_location']} days")
-                        st.write(f"• Group: {match['car_group']}")
-                        
-                    with col2:
-                        st.write("**Score Breakdown:**")
-                        st.write(f"• Match Score: {match['match_score']:.1f}")
-                        for component, score in match['match_breakdown'].items():
-                            st.write(f"  - {component}: {score:.1f}")
-                        st.write(f"• Showroom Score: {match['showroom_score']:.1f}")
-                        for component, score in match['showroom_breakdown'].items():
-                            st.write(f"  - {component}: {score:.1f}")
-                        st.write(f"**Total Score: {match['total_score']:.1f}**")
-
-        else:
-            st.warning("No matches found with the current filters. Try adjusting the filter criteria.")
-
-        # Summary statistics
-        if not matches_df.empty:
-            st.subheader("📊 Summary Statistics")
-            
-            col1, col2, col3 = st.columns(3)
-            
+            # Display summary metrics
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.write("**Score Distribution:**")
-                high_matches = len(matches_df[matches_df['total_score'] >= 60])
-                medium_matches = len(matches_df[(matches_df['total_score'] >= 40) & (matches_df['total_score'] < 60)])
-                low_matches = len(matches_df[(matches_df['total_score'] >= 20) & (matches_df['total_score'] < 40)])
-                
-                st.write(f"🟢 High (60+): {high_matches}")
-                st.write(f"🟡 Medium (40-59): {medium_matches}")
-                st.write(f"🔴 Low (20-39): {low_matches}")
-            
+                st.metric("Total Cars", len(live_cars_with_location))
             with col2:
-                st.write("**Top Car Groups:**")
-                group_counts = matches_df['car_group'].value_counts().head(5)
-                for group, count in group_counts.items():
-                    st.write(f"• {group}: {count}")
-            
+                avg_doa = live_cars_with_location['DOA'].mean()
+                st.metric("Avg Days on App", f"{avg_doa:.1f}")
             with col3:
-                st.write("**Average Scores:**")
-                avg_match = matches_df['match_score'].mean()
-                avg_showroom = matches_df['showroom_score'].mean()
-                avg_total = matches_df['total_score'].mean()
-                
-                st.write(f"• Match Score: {avg_match:.1f}")
-                st.write(f"• Showroom Score: {avg_showroom:.1f}")
-                st.write(f"• Total Score: {avg_total:.1f}")
+                avg_price = live_cars_with_location['App_price'].mean()
+                st.metric("Avg Price", f"EGP {avg_price:,.0f}")
+            with col4:
+                total_requests = live_cars_with_location['Buy_now_requests_count'].sum()
+                st.metric("Total Requests", int(total_requests))
+
+            # Filters
+            st.write("**Filter Options:** ⚡ *Instant filtering on cached data*")
+            filter_col1, filter_col2, filter_col3, filter_col4 = st.columns(4)
+
+            with filter_col1:
+                # Make filter
+                makes = ["All Makes"] + sorted(live_cars_with_location['make'].dropna().unique().tolist())
+                selected_make = st.selectbox("Make", makes)
+
+            with filter_col2:
+                # Model filter (filtered based on make selection)
+                if selected_make != "All Makes":
+                    available_models = live_cars_with_location[live_cars_with_location['make'] == selected_make]['model'].dropna().unique()
+                else:
+                    available_models = live_cars_with_location['model'].dropna().unique()
+                models = ["All Models"] + sorted(available_models.tolist())
+                selected_model = st.selectbox("Model", models)
+
+            with filter_col3:
+                # Price range filter
+                min_price = int(live_cars_with_location['App_price'].min())
+                max_price = int(live_cars_with_location['App_price'].max())
+                price_range = st.slider(
+                    "Price Range (EGP)",
+                    min_value=min_price,
+                    max_value=max_price,
+                    value=(min_price, max_price),
+                    step=10000
+                )
+
+            with filter_col4:
+                # Location filter
+                locations = ["All Locations"] + sorted(live_cars_with_location['location_stage_name'].unique().tolist())
+                selected_location = st.selectbox("Location", locations)
+
+            # Additional filters
+            filter_col5, filter_col6, filter_col7 = st.columns(3)
+
+            with filter_col5:
+                # Publishing date filter
+                min_date = live_cars_with_location['publishing_date'].min().date()
+                max_date = live_cars_with_location['publishing_date'].max().date()
+                date_range = st.date_input(
+                    "Publishing Date Range",
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date
+                )
+
+            with filter_col6:
+                # DOA filter
+                min_doa = 0
+                max_doa = int(live_cars_with_location['DOA'].max())
+                doa_range = st.slider(
+                    "Days on App",
+                    min_value=min_doa,
+                    max_value=max_doa,
+                    value=(min_doa, max_doa)
+                )
+
+            with filter_col7:
+                # Year filter
+                min_year = int(live_cars_with_location['year'].min())
+                max_year = int(live_cars_with_location['year'].max())
+                year_range = st.slider(
+                    "Year Range",
+                    min_value=min_year,
+                    max_value=max_year,
+                    value=(min_year, max_year)
+                )
+
+            # Apply filters
+            filtered_cars = live_cars_with_location.copy()
+
+            if selected_make != "All Makes":
+                filtered_cars = filtered_cars[filtered_cars['make'] == selected_make]
+
+            if selected_model != "All Models":
+                filtered_cars = filtered_cars[filtered_cars['model'] == selected_model]
+
+            if selected_location != "All Locations":
+                filtered_cars = filtered_cars[filtered_cars['location_stage_name'] == selected_location]
+
+            # Apply price filter
+            filtered_cars = filtered_cars[
+                (filtered_cars['App_price'] >= price_range[0]) & 
+                (filtered_cars['App_price'] <= price_range[1])
+            ]
+
+            # Apply DOA filter
+            filtered_cars = filtered_cars[
+                (filtered_cars['DOA'] >= doa_range[0]) & 
+                (filtered_cars['DOA'] <= doa_range[1])
+            ]
+
+            # Apply year filter
+            filtered_cars = filtered_cars[
+                (filtered_cars['year'] >= year_range[0]) & 
+                (filtered_cars['year'] <= year_range[1])
+            ]
+
+            # Apply date filter
+            if isinstance(date_range, tuple) and len(date_range) == 2:
+                start_date, end_date = date_range
+                filtered_cars = filtered_cars[
+                    (filtered_cars['publishing_date'].dt.date >= start_date) & 
+                    (filtered_cars['publishing_date'].dt.date <= end_date)
+                ]
+
+            # Display filtered results count
+            st.write(f"**Showing {len(filtered_cars)} cars (filtered from {len(live_cars_with_location)} total)**")
+
+            # Display filtered cars
+            if not filtered_cars.empty:
+                display_columns = ['sf_vehicle_name', 'make', 'model', 'year', 'kilometers',
+                                   'publishing_date', 'DOA', 'App_price', 'Buy_now_requests_count',
+                                   'showroom_requests_count', 'Buy_now_visits_count', 'location_stage_name']
+
+                # Ensure all required columns exist
+                missing_columns = [col for col in display_columns if col not in filtered_cars.columns]
+                if missing_columns:
+                    st.error(f"Missing columns in data: {', '.join(missing_columns)}")
+                    st.write("Available columns:", filtered_cars.columns.tolist())
+                else:
+                    # Sort by most recent publishing date and highest requests
+                    filtered_cars = filtered_cars.sort_values(['publishing_date', 'Buy_now_requests_count'], ascending=[False, False])
+                    
+                    st.dataframe(
+                        filtered_cars[display_columns],
+                        column_config={
+                            "sf_vehicle_name": "Vehicle Name",
+                            "make": "Make",
+                            "model": "Model",
+                            "year": "Year",
+                            "kilometers": st.column_config.NumberColumn(
+                                "Kilometers",
+                                format="%d km"
+                            ),
+                            "publishing_date": "Published Date",
+                            "DOA": st.column_config.NumberColumn(
+                                "Days on App",
+                                format="%d days"
+                            ),
+                            "App_price": st.column_config.NumberColumn(
+                                "Price",
+                                format="EGP %d"
+                            ),
+                            "Buy_now_requests_count": st.column_config.NumberColumn(
+                                "Buy Now Requests",
+                                format="%d"
+                            ),
+                            "showroom_requests_count": st.column_config.NumberColumn(
+                                "Showroom Requests",
+                                format="%d"
+                            ),
+                            "Buy_now_visits_count": st.column_config.NumberColumn(
+                                "Visits",
+                                format="%d"
+                            ),
+                            "location_stage_name": "Location"
+                        },
+                        use_container_width=True
+                    )
+
+                    # Export functionality for live cars
+                    st.subheader("📥 Export Live Cars Data")
+                    csv_data = filtered_cars[display_columns].to_csv(index=False)
+                    st.download_button(
+                        label="📥 Download Live Cars as CSV",
+                        data=csv_data,
+                        file_name=f"live_cars_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                        mime="text/csv"
+                    )
+            else:
+                st.warning("No cars match the selected filters")
+
+        except Exception as e:
+            st.error(f"Error in Live Cars tab: {str(e)}")
+            st.write("Debug info:")
+            st.write("inventory_df shape:", inventory_df.shape if inventory_df is not None else "None")
+            st.write("inventory_df columns:", inventory_df.columns.tolist() if inventory_df is not None else "None")
 
     if __name__ == "__main__":
         main()
