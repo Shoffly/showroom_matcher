@@ -1147,7 +1147,8 @@ if check_password():
                         ]
                         if not dealer_request.empty:
                             requested = "Yes"
-                            days_in_location = dealer_request['days_on_hand'].iloc[0]
+                            days_on_hand = dealer_request['days_on_hand'].iloc[0]
+                            days_in_location = days_on_hand if pd.notna(days_on_hand) else 0
                     
                     # Calculate match score
                     match_score, match_breakdown = calculate_inventory_match_score(
@@ -1506,7 +1507,7 @@ if check_password():
                             st.write(f"• Price: EGP {match['price']:,.0f}")
                             st.write(f"• Location: {match['location']}")
                             st.write(f"• Requested: {match['requested']}")
-                            if match['days_in_location'] > 0:
+                            if pd.notna(match['days_in_location']) and match['days_in_location'] > 0:
                                 st.write(f"• Days in Location: {match['days_in_location']} days")
                             st.write(f"• Group: {match['car_group']}")
                             
