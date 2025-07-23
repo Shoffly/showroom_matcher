@@ -595,6 +595,32 @@ if check_password():
         WHERE request_status = "Queued"
         """
 
+        # Cars being displayed count query
+        displayed_cars_query = """
+        SELECT dealer_code,
+               dealer_name,
+               COUNT(*) AS cars_displayed_count
+        FROM ajans_dealers.dealer_showroom_requests 
+        WHERE request_status = "Being Displayed"
+        GROUP BY dealer_code, dealer_name
+        """
+
+        # Consignment available cars query
+        consignment_cars_query = """
+        SELECT a.sf_vehicle_name,
+               make,
+               model,
+               CASE WHEN flash_sale_enabled is TRUE THEN "Flash sale" ELSE "Consignment" END AS flash_sale_flag
+        FROM ajans_dealers.vehicle_activity a 
+        LEFT JOIN (
+            SELECT sf_vehicle_name,
+                   request_status
+            FROM ajans_dealers.dealer_requests 
+            WHERE request_status in ("Succeeded" , "Payment Log") AND request_type = "Buy Now" 
+        ) b ON a.sf_vehicle_name = b.sf_vehicle_name
+        WHERE event_date = current_date() AND request_status is NULL 
+        """
+
         print("Executing inventory_query...")
         inventory_df = client.query(inventory_query).to_dataframe()
         print("✓ inventory_query completed successfully")
@@ -634,6 +660,14 @@ if check_password():
         print("Executing queue_position_query...")
         queue_position_df = client.query(queue_position_query).to_dataframe()
         print("✓ queue_position_query completed successfully")
+
+        print("Executing displayed_cars_query...")
+        displayed_cars_df = client.query(displayed_cars_query).to_dataframe()
+        print("✓ displayed_cars_query completed successfully")
+
+        print("Executing consignment_cars_query...")
+        consignment_cars_df = client.query(consignment_cars_query).to_dataframe()
+        print("✓ consignment_cars_query completed successfully")
 
         # Data preprocessing
         if not inventory_df.empty:
@@ -696,7 +730,7 @@ if check_password():
                 if col in current_showroom_df.columns:
                     current_showroom_df[col] = pd.to_numeric(current_showroom_df[col], errors='coerce')
 
-        return inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df, queue_position_df
+        return inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df, queue_position_df, displayed_cars_df, consignment_cars_df
 
 
     def calculate_showroom_score(dealer_code, showroom_performance_df):
@@ -1121,7 +1155,7 @@ if check_password():
 
     def generate_showroom_matches(inventory_df, showroom_performance_df, historical_df, recent_views_df,
                                   recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df,
-                                  queue_position_df):
+                                  queue_position_df, displayed_cars_df, consignment_cars_df):
         """Generate showroom matches for live cars only"""
 
         matches = []
@@ -1189,6 +1223,13 @@ if check_password():
                         if not queue_info.empty:
                             queue_position = queue_info['queue_position'].iloc[0]
 
+                    # Get count of cars being displayed for this dealer
+                    cars_displayed = 0
+                    if not displayed_cars_df.empty:
+                        displayed_info = displayed_cars_df[displayed_cars_df['dealer_code'] == dealer_code]
+                        if not displayed_info.empty:
+                            cars_displayed = displayed_info['cars_displayed_count'].iloc[0]
+
                     # Calculate match score
                     match_score, match_breakdown = calculate_inventory_match_score(
                         car, dealer_code, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df
@@ -1214,6 +1255,7 @@ if check_password():
                             'requested': requested,
                             'days_in_location': days_in_location,
                             'queue_position': queue_position,
+                            'cars_displayed': cars_displayed,
                             'dealer_name': dealer_name,
                             'dealer_code': dealer_code,
                             'match_score': match_score,
@@ -1249,6 +1291,11 @@ if check_password():
             - **All dealers shown by default**: Both queued and non-queued dealers are displayed
             - **Queue position**: Shows "#1", "#2", etc. for dealers in queue, "-" for non-queued dealers
             - **Filtering options**: Can filter to show only queued, only non-queued, or specific queue positions
+
+            #### **🏪 Cars Displayed Count**
+            - **Shows current showroom inventory**: Count of cars each dealer currently has "Being Displayed"
+            - **Real-time status**: Based on current showroom request status
+            - **Default to 0**: Shows "0 cars" for dealers with no cars currently displayed
 
             #### **🎯 Match Score (Historical Purchase Patterns)**
             - **Exact Model Match** (25 pts max): If dealer bought this exact model before
@@ -1326,7 +1373,8 @@ if check_password():
                 for key in ['data_loaded', 'matches_calculated', 'live_cars_with_location',
                             'inventory_df', 'showroom_performance_df', 'historical_df',
                             'recent_views_df', 'recent_filters_df', 'dealer_requests_df',
-                            'olx_df', 'location_df', 'current_showroom_df', 'queue_position_df', 'matches_df']:
+                            'olx_df', 'location_df', 'current_showroom_df', 'queue_position_df', 'displayed_cars_df',
+                            'consignment_cars_df', 'matches_df']:
                     if key in st.session_state:
                         del st.session_state[key]
                 st.session_state.data_loaded = False
@@ -1348,7 +1396,7 @@ if check_password():
         # Load data only once and cache in session state
         if not st.session_state.data_loaded:
             with st.spinner("Loading inventory and showroom data... (This may take a moment)"):
-                inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df, queue_position_df = load_showroom_data()
+                inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df, queue_position_df, displayed_cars_df, consignment_cars_df = load_showroom_data()
 
                 # Store in session state
                 st.session_state.inventory_df = inventory_df
@@ -1361,6 +1409,8 @@ if check_password():
                 st.session_state.location_df = location_df
                 st.session_state.current_showroom_df = current_showroom_df
                 st.session_state.queue_position_df = queue_position_df
+                st.session_state.displayed_cars_df = displayed_cars_df
+                st.session_state.consignment_cars_df = consignment_cars_df
                 st.session_state.data_loaded = True
                 st.session_state.data_load_time = datetime.now()
         else:
@@ -1375,6 +1425,8 @@ if check_password():
             location_df = st.session_state.location_df
             current_showroom_df = st.session_state.current_showroom_df
             queue_position_df = st.session_state.queue_position_df
+            displayed_cars_df = st.session_state.displayed_cars_df
+            consignment_cars_df = st.session_state.consignment_cars_df
 
         if inventory_df.empty:
             st.warning("No inventory data available.")
@@ -1403,7 +1455,8 @@ if check_password():
             with st.spinner("Calculating showroom matches... (One-time calculation)"):
                 matches = generate_showroom_matches(inventory_df, showroom_performance_df, historical_df,
                                                     recent_views_df, recent_filters_df, dealer_requests_df, olx_df,
-                                                    location_df, current_showroom_df, queue_position_df)
+                                                    location_df, current_showroom_df, queue_position_df,
+                                                    displayed_cars_df, consignment_cars_df)
 
                 if not matches:
                     st.warning("No showroom matches found.")
@@ -1424,12 +1477,11 @@ if check_password():
         matches_df = st.session_state.matches_df
 
         # Create main tabs
-        main_tab1, main_tab2 = st.tabs(["🎯 Showroom Matching", "🚗 Live Cars"])
+        main_tab1, main_tab2 = st.tabs(["🎯 Showroom Matching", "🏪 Consignment Cars"])
 
         with main_tab1:
             st.subheader("🎯 Showroom Matching Results")
-            
-
+           
             # Filtering section
             st.write("**Filter Options:** ⚡ *Instant filtering on cached data*")
             col1, col2, col3, col4, col5 = st.columns(5)
@@ -1578,8 +1630,8 @@ if check_password():
                 # Prepare display DataFrame
                 display_df = filtered_df[[
                     'car_code', 'price', 'model', 'make', 'year', 'kilometers', 'location',
-                    'requested', 'days_in_location', 'queue_position', 'dealer_name', 'dealer_code', 'match_score',
-                    'showroom_score', 'total_score'
+                    'requested', 'days_in_location', 'queue_position', 'cars_displayed', 'dealer_name', 'dealer_code',
+                    'match_score', 'showroom_score', 'total_score'
                 ]].copy()
 
                 # Add match level
@@ -1594,6 +1646,8 @@ if check_password():
                     lambda x: f"{int(x)} days" if pd.notna(x) and x > 0 else "-")
                 display_df['queue_position'] = display_df['queue_position'].apply(
                     lambda x: f"#{int(x)}" if pd.notna(x) else "-")
+                display_df['cars_displayed'] = display_df['cars_displayed'].apply(
+                    lambda x: f"{int(x)} cars" if pd.notna(x) and x > 0 else "0 cars")
                 display_df['match_score'] = display_df['match_score'].round(1)
                 display_df['showroom_score'] = display_df['showroom_score'].round(1)
                 display_df['total_score'] = display_df['total_score'].round(1)
@@ -1610,6 +1664,7 @@ if check_password():
                     'requested': 'Requested',
                     'days_in_location': 'Days in Location',
                     'queue_position': 'Queue Position',
+                    'cars_displayed': 'Cars Displayed',
                     'dealer_name': 'Dealer Name',
                     'dealer_code': 'Dealer Code',
                     'match_score': 'Match Score',
@@ -1672,6 +1727,8 @@ if check_password():
                                 st.write(f"• Days in Location: {match['days_in_location']} days")
                             if pd.notna(match['queue_position']):
                                 st.write(f"• Queue Position: #{int(match['queue_position'])}")
+                            cars_displayed_count = match.get('cars_displayed', 0)
+                            st.write(f"• Cars in Showroom: {int(cars_displayed_count)}")
                             st.write(f"• Group: {match['car_group']}")
 
                         with col2:
@@ -1722,12 +1779,13 @@ if check_password():
 
         with main_tab2:
             # Live Cars tab content - using cached data for fast filtering
-            show_live_cars_tab(st.session_state.inventory_df, st.session_state.location_df)
+            show_live_cars_tab(st.session_state.inventory_df, st.session_state.location_df,
+                               st.session_state.consignment_cars_df)
 
 
-    def show_live_cars_tab(inventory_df, location_df):
-        """Display the Live Cars tab with filtering functionality"""
-        st.subheader("🚗 Live Cars Inventory")
+    def show_live_cars_tab(inventory_df, location_df, consignment_cars_df):
+        """Display the Live Cars tab with filtering functionality - only consignment available cars"""
+        st.subheader("🚗 Live Cars Inventory - Consignment Available Only")
 
         # Track tab view
         if "current_user" in st.session_state and POSTHOG_ENABLED and posthog:
@@ -1747,24 +1805,48 @@ if check_password():
             st.warning("No live cars data available.")
             return
 
+        # Add info about consignment filtering
+        st.info("🏪 **Consignment Available Only**: Showing only cars available for consignment (not sold via Buy Now)")
+
+        if consignment_cars_df.empty:
+            st.warning("No cars available for consignment at the moment.")
+            return
+
         try:
             # Cache the merged live cars data to avoid re-processing
             if 'live_cars_with_location' not in st.session_state or not st.session_state.data_loaded:
-                # Merge location data only once
-                live_cars_with_location = inventory_df.copy()
+                # Filter for only consignment available cars first
+                if not consignment_cars_df.empty:
+                    # Get list of consignment available car names
+                    consignment_car_names = consignment_cars_df['sf_vehicle_name'].tolist()
+                    # Filter inventory to only include consignment available cars
+                    live_cars_with_location = inventory_df[
+                        inventory_df['sf_vehicle_name'].isin(consignment_car_names)].copy()
 
-                if not location_df.empty:
+                    # Merge with consignment data to get flash_sale_flag
                     live_cars_with_location = live_cars_with_location.merge(
-                        location_df,
-                        left_on='sf_vehicle_name',
-                        right_on='car_name',
+                        consignment_cars_df[['sf_vehicle_name', 'flash_sale_flag']],
+                        on='sf_vehicle_name',
                         how='left'
                     )
-                    # Fill NaN values in location
-                    live_cars_with_location['location_stage_name'] = live_cars_with_location[
-                        'location_stage_name'].fillna('Unknown')
                 else:
-                    live_cars_with_location['location_stage_name'] = 'Unknown'
+                    # If no consignment data, show empty dataframe
+                    live_cars_with_location = pd.DataFrame()
+
+                # Merge location data if we have consignment cars
+                if not live_cars_with_location.empty:
+                    if not location_df.empty:
+                        live_cars_with_location = live_cars_with_location.merge(
+                            location_df,
+                            left_on='sf_vehicle_name',
+                            right_on='car_name',
+                            how='left'
+                        )
+                        # Fill NaN values in location
+                        live_cars_with_location['location_stage_name'] = live_cars_with_location[
+                            'location_stage_name'].fillna('Unknown')
+                    else:
+                        live_cars_with_location['location_stage_name'] = 'Unknown'
 
                 # Cache the processed data
                 st.session_state.live_cars_with_location = live_cars_with_location
@@ -1773,18 +1855,29 @@ if check_password():
                 live_cars_with_location = st.session_state.live_cars_with_location
 
             # Display summary metrics
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             with col1:
                 st.metric("Total Cars", len(live_cars_with_location))
             with col2:
+                if 'flash_sale_flag' in live_cars_with_location.columns:
+                    flash_sale_count = len(
+                        live_cars_with_location[live_cars_with_location['flash_sale_flag'] == 'Flash sale'])
+                    st.metric("Flash Sale", flash_sale_count)
+                else:
+                    st.metric("Flash Sale", 0)
+            with col3:
+                if 'flash_sale_flag' in live_cars_with_location.columns:
+                    consignment_count = len(
+                        live_cars_with_location[live_cars_with_location['flash_sale_flag'] == 'Consignment'])
+                    st.metric("Consignment", consignment_count)
+                else:
+                    st.metric("Consignment", 0)
+            with col4:
                 avg_doa = live_cars_with_location['DOA'].mean()
                 st.metric("Avg Days on App", f"{avg_doa:.1f}")
-            with col3:
+            with col5:
                 avg_price = live_cars_with_location['App_price'].mean()
                 st.metric("Avg Price", f"EGP {avg_price:,.0f}")
-            with col4:
-                total_requests = live_cars_with_location['Buy_now_requests_count'].sum()
-                st.metric("Total Requests", int(total_requests))
 
             # Filters
             st.write("**Filter Options:** ⚡ *Instant filtering on cached data*")
@@ -1821,6 +1914,18 @@ if check_password():
                 # Location filter
                 locations = ["All Locations"] + sorted(live_cars_with_location['location_stage_name'].unique().tolist())
                 selected_location = st.selectbox("Location", locations)
+
+            # Additional filters row with sale type
+            filter_col8, filter_col9 = st.columns(2)
+
+            with filter_col8:
+                # Sale type filter
+                if 'flash_sale_flag' in live_cars_with_location.columns:
+                    sale_types = ["All Sale Types"] + sorted(
+                        live_cars_with_location['flash_sale_flag'].dropna().unique().tolist())
+                    selected_sale_type = st.selectbox("Sale Type", sale_types)
+                else:
+                    selected_sale_type = "All Sale Types"
 
             # Additional filters
             filter_col5, filter_col6, filter_col7 = st.columns(3)
@@ -1870,6 +1975,10 @@ if check_password():
             if selected_location != "All Locations":
                 filtered_cars = filtered_cars[filtered_cars['location_stage_name'] == selected_location]
 
+            # Apply sale type filter
+            if selected_sale_type != "All Sale Types":
+                filtered_cars = filtered_cars[filtered_cars['flash_sale_flag'] == selected_sale_type]
+
             # Apply price filter
             filtered_cars = filtered_cars[
                 (filtered_cars['App_price'] >= price_range[0]) &
@@ -1902,7 +2011,7 @@ if check_password():
             # Display filtered cars
             if not filtered_cars.empty:
                 display_columns = ['sf_vehicle_name', 'make', 'model', 'year', 'kilometers',
-                                   'publishing_date', 'DOA', 'App_price', 'Buy_now_requests_count',
+                                   'publishing_date', 'DOA', 'App_price', 'flash_sale_flag', 'Buy_now_requests_count',
                                    'showroom_requests_count', 'Buy_now_visits_count', 'location_stage_name']
 
                 # Ensure all required columns exist
@@ -1935,6 +2044,7 @@ if check_password():
                                 "Price",
                                 format="EGP %d"
                             ),
+                            "flash_sale_flag": "Sale Type",
                             "Buy_now_requests_count": st.column_config.NumberColumn(
                                 "Buy Now Requests",
                                 format="%d"
