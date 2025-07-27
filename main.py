@@ -38,6 +38,7 @@ CREDENTIALS = {
     "abdallah.hazem@sylndr.com": hashlib.sha256("sylndr123".encode()).hexdigest(),
     "mohamed.abdelgalil@sylndr.com": hashlib.sha256("sylndr123".encode()).hexdigest(),
     "mohanad.elgarhy@sylndr.com": hashlib.sha256("sylndr123".encode()).hexdigest(),
+    "nawal.ramadan@sylndr.com": hashlib.sha256("sylndr123".encode()).hexdigest(),
 }
 
 
