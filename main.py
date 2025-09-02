@@ -38,7 +38,6 @@ CREDENTIALS = {
     "abdallah.hazem@sylndr.com": hashlib.sha256("sylndr123".encode()).hexdigest(),
     "mohamed.abdelgalil@sylndr.com": hashlib.sha256("sylndr123".encode()).hexdigest(),
     "mohanad.elgarhy@sylndr.com": hashlib.sha256("sylndr123".encode()).hexdigest(),
-    "nawal.ramadan@sylndr.com": hashlib.sha256("sylndr123".encode()).hexdigest(),
 }
 
 
@@ -200,7 +199,7 @@ if check_password():
             except FileNotFoundError:
                 st.error(
                     "No credentials found. Please configure either Streamlit secrets or provide a service_account.json file.")
-                return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+                return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
         client = bigquery.Client(credentials=credentials)
 
@@ -622,6 +621,25 @@ if check_password():
         WHERE event_date = current_date() AND request_status is NULL 
         """
 
+        # Discount eligibility query
+        discount_eligibility_query = """
+        SELECT sf_vehicle_name,
+               showroom_displayed_count,
+               days_in_consignment,
+               discount_eligibility_flag,
+               car_status
+        FROM wholesale_test.showroom_discount_eligibility
+        """
+
+        # Discount pricing query
+        discount_pricing_query = """
+        SELECT c_code,
+               flash_price,
+               consignment_price,
+               speed_discount_price
+        FROM wholesale_test.showroom_discount
+        """
+
         print("Executing inventory_query...")
         inventory_df = client.query(inventory_query).to_dataframe()
         print("✓ inventory_query completed successfully")
@@ -669,6 +687,14 @@ if check_password():
         print("Executing consignment_cars_query...")
         consignment_cars_df = client.query(consignment_cars_query).to_dataframe()
         print("✓ consignment_cars_query completed successfully")
+
+        print("Executing discount_eligibility_query...")
+        discount_eligibility_df = client.query(discount_eligibility_query).to_dataframe()
+        print("✓ discount_eligibility_query completed successfully")
+
+        print("Executing discount_pricing_query...")
+        discount_pricing_df = client.query(discount_pricing_query).to_dataframe()
+        print("✓ discount_pricing_query completed successfully")
 
         # Data preprocessing
         if not inventory_df.empty:
@@ -731,7 +757,7 @@ if check_password():
                 if col in current_showroom_df.columns:
                     current_showroom_df[col] = pd.to_numeric(current_showroom_df[col], errors='coerce')
 
-        return inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df, queue_position_df, displayed_cars_df, consignment_cars_df
+        return inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df, queue_position_df, displayed_cars_df, consignment_cars_df, discount_eligibility_df, discount_pricing_df
 
 
     def calculate_showroom_score(dealer_code, showroom_performance_df):
@@ -1156,7 +1182,8 @@ if check_password():
 
     def generate_showroom_matches(inventory_df, showroom_performance_df, historical_df, recent_views_df,
                                   recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df,
-                                  queue_position_df, displayed_cars_df, consignment_cars_df):
+                                  queue_position_df, displayed_cars_df, consignment_cars_df, discount_eligibility_df,
+                                  discount_pricing_df):
         """Generate showroom matches for live cars only"""
 
         matches = []
@@ -1191,6 +1218,57 @@ if check_password():
                     location_info = location_df[location_df['car_name'] == car['sf_vehicle_name']]
                     if not location_info.empty:
                         car_location = location_info['location_stage_name'].iloc[0]
+
+                # Calculate car traction based on queue count
+                queue_count = 0
+                if not queue_position_df.empty:
+                    car_queue_count = len(
+                        queue_position_df[queue_position_df['sf_vehicle_name'] == car['sf_vehicle_name']])
+                    queue_count = car_queue_count
+
+                # Determine traction level
+                if queue_count >= 3:
+                    car_traction = "High"
+                elif queue_count > 0:
+                    car_traction = "Low"
+                else:
+                    car_traction = "No"
+
+                # Get discount eligibility information
+                is_discounted = False
+                discount_price = None
+                regular_price = car.get('App_price', 0)
+
+                if not discount_eligibility_df.empty:
+                    eligibility_info = discount_eligibility_df[
+                        discount_eligibility_df['sf_vehicle_name'] == car['sf_vehicle_name']]
+                    if not eligibility_info.empty:
+                        eligibility_row = eligibility_info.iloc[0]
+                        showroom_displayed_count = eligibility_row.get('showroom_displayed_count', 999)
+                        days_in_consignment = eligibility_row.get('days_in_consignment', -1)
+
+                        # Check if car is eligible for discount based on criteria
+                        if (showroom_displayed_count < 2 and
+                                days_in_consignment >= 0 and days_in_consignment <= 14):
+                            is_discounted = True
+
+                            # Get discount price from pricing table
+                            if not discount_pricing_df.empty:
+                                pricing_info = discount_pricing_df[
+                                    discount_pricing_df['c_code'] == car['sf_vehicle_name']]
+                                if not pricing_info.empty:
+                                    pricing_row = pricing_info.iloc[0]
+                                    speed_discount_price = pricing_row.get('speed_discount_price')
+                                    consignment_price = pricing_row.get('consignment_price')
+
+                                    # Use speed_discount_price if discounted, otherwise consignment_price
+                                    if pd.notna(speed_discount_price):
+                                        discount_price = speed_discount_price
+                                    elif pd.notna(consignment_price):
+                                        discount_price = consignment_price
+
+                # Determine final price to display
+                final_price = discount_price if is_discounted and discount_price is not None else regular_price
 
                 # Calculate scores for each dealer
                 for dealer_code in all_dealers:
@@ -1246,6 +1324,10 @@ if check_password():
                         matches.append({
                             'car_code': car['sf_vehicle_name'],
                             'price': car['App_price'],
+                            'final_price': final_price,
+                            'is_discounted': is_discounted,
+                            'car_traction': car_traction,
+                            'queue_count': queue_count,
                             'model': car['model'],
                             'make': car['make'],
                             'year': car['year'],
@@ -1297,6 +1379,18 @@ if check_password():
             - **Shows current showroom inventory**: Count of cars each dealer currently has "Being Displayed"
             - **Real-time status**: Based on current showroom request status
             - **Default to 0**: Shows "0 cars" for dealers with no cars currently displayed
+
+            #### **🚗 Car Traction Level**
+            - **High Traction**: 3 or more dealers in queue for the car
+            - **Low Traction**: 1-2 dealers in queue for the car
+            - **No Traction**: No dealers currently in queue for the car
+            - **Queue Count**: Shows exact number of dealers queued for each car
+
+            #### **💰 Discount Pricing**
+            - **Discount Eligibility**: Cars with showroom_displayed_count < 2 and days_in_consignment between 0-14 days
+            - **Final Price**: Shows speed_discount_price if discounted, otherwise consignment_price
+            - **Discounted Flag**: Yes/No indicator for discount eligibility
+            - **Price Comparison**: Original price vs final discounted price displayed
 
             #### **🎯 Match Score (Historical Purchase Patterns)**
             - **Exact Model Match** (25 pts max): If dealer bought this exact model before
@@ -1375,7 +1469,7 @@ if check_password():
                             'inventory_df', 'showroom_performance_df', 'historical_df',
                             'recent_views_df', 'recent_filters_df', 'dealer_requests_df',
                             'olx_df', 'location_df', 'current_showroom_df', 'queue_position_df', 'displayed_cars_df',
-                            'consignment_cars_df', 'matches_df']:
+                            'consignment_cars_df', 'discount_eligibility_df', 'discount_pricing_df', 'matches_df']:
                     if key in st.session_state:
                         del st.session_state[key]
                 st.session_state.data_loaded = False
@@ -1397,7 +1491,7 @@ if check_password():
         # Load data only once and cache in session state
         if not st.session_state.data_loaded:
             with st.spinner("Loading inventory and showroom data... (This may take a moment)"):
-                inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df, queue_position_df, displayed_cars_df, consignment_cars_df = load_showroom_data()
+                inventory_df, showroom_performance_df, historical_df, recent_views_df, recent_filters_df, dealer_requests_df, olx_df, location_df, current_showroom_df, queue_position_df, displayed_cars_df, consignment_cars_df, discount_eligibility_df, discount_pricing_df = load_showroom_data()
 
                 # Store in session state
                 st.session_state.inventory_df = inventory_df
@@ -1412,6 +1506,8 @@ if check_password():
                 st.session_state.queue_position_df = queue_position_df
                 st.session_state.displayed_cars_df = displayed_cars_df
                 st.session_state.consignment_cars_df = consignment_cars_df
+                st.session_state.discount_eligibility_df = discount_eligibility_df
+                st.session_state.discount_pricing_df = discount_pricing_df
                 st.session_state.data_loaded = True
                 st.session_state.data_load_time = datetime.now()
         else:
@@ -1428,6 +1524,8 @@ if check_password():
             queue_position_df = st.session_state.queue_position_df
             displayed_cars_df = st.session_state.displayed_cars_df
             consignment_cars_df = st.session_state.consignment_cars_df
+            discount_eligibility_df = st.session_state.discount_eligibility_df
+            discount_pricing_df = st.session_state.discount_pricing_df
 
         if inventory_df.empty:
             st.warning("No inventory data available.")
@@ -1457,7 +1555,8 @@ if check_password():
                 matches = generate_showroom_matches(inventory_df, showroom_performance_df, historical_df,
                                                     recent_views_df, recent_filters_df, dealer_requests_df, olx_df,
                                                     location_df, current_showroom_df, queue_position_df,
-                                                    displayed_cars_df, consignment_cars_df)
+                                                    displayed_cars_df, consignment_cars_df, discount_eligibility_df,
+                                                    discount_pricing_df)
 
                 if not matches:
                     st.warning("No showroom matches found.")
@@ -1482,10 +1581,20 @@ if check_password():
 
         with main_tab1:
             st.subheader("🎯 Showroom Matching Results")
-           
+            st.info("🚗 **Matching only live cars** - same vehicles shown in the Live Cars tab")
+            st.info("🚫 **Dealer D-0200 excluded** from all matching recommendations")
+            st.info("📋 **Queue Position**: Shows dealer's position in queue (if any) - all dealers shown by default")
+            st.info("🏪 **Cars Displayed**: Shows how many cars each dealer currently has in their showroom")
+            st.info("🚗 **Car Traction**: High (3+ queued), Low (1-2 queued), No (0 queued)")
+            st.info(
+                "💰 **Discount Pricing**: Shows discounted price when eligible (showroom_displayed_count < 2 and days_in_consignment 0-14)")
+
             # Filtering section
             st.write("**Filter Options:** ⚡ *Instant filtering on cached data*")
             col1, col2, col3, col4, col5 = st.columns(5)
+
+            # Additional filter row for new features
+            filter_row2_col1, filter_row2_col2, filter_row2_col3, filter_row2_col4, filter_row2_col5 = st.columns(5)
 
             with col1:
                 # Car filter with enhanced display format
@@ -1502,12 +1611,14 @@ if check_password():
 
             with col2:
                 # Location filter
-                location_options = ["All Locations"] + sorted(list(matches_df['location'].unique()))
+                unique_locations = matches_df['location'].dropna().unique()
+                location_options = ["All Locations"] + sorted(list(unique_locations))
                 selected_location = st.selectbox("Select Location:", location_options)
 
             with col3:
                 # Dealer filter
-                dealer_options = ["All Dealers"] + list(matches_df['dealer_code'].unique())
+                unique_dealers = matches_df['dealer_code'].dropna().unique()
+                dealer_options = ["All Dealers"] + sorted(list(unique_dealers))
                 selected_dealer = st.selectbox("Select Dealer:", dealer_options)
 
             with col4:
@@ -1573,6 +1684,33 @@ if check_password():
                     show_non_queued_only = False
                     st.info("No queue data available")
 
+            # Second row of filters for new features
+            with filter_row2_col1:
+                # Traction filter
+                unique_traction = matches_df['car_traction'].dropna().unique()
+                traction_options = ["All Traction Levels"] + sorted(list(unique_traction))
+                selected_traction = st.selectbox("Car Traction:", traction_options)
+
+            with filter_row2_col2:
+                # Discount filter
+                discount_options = ["All Cars", "Discounted Only", "Non-Discounted Only"]
+                selected_discount = st.selectbox("Discount Status:", discount_options)
+
+            with filter_row2_col3:
+                # Queue count range filter
+                if not matches_df['queue_count'].dropna().empty:
+                    min_queue_count = int(matches_df['queue_count'].min())
+                    max_queue_count = int(matches_df['queue_count'].max())
+                    queue_count_range = st.slider(
+                        "Queue Count Range",
+                        min_value=min_queue_count,
+                        max_value=max_queue_count,
+                        value=(min_queue_count, max_queue_count),
+                        help="Filter by number of dealers in queue for each car"
+                    )
+                else:
+                    queue_count_range = (0, 0)
+
             # Apply filters
             filtered_df = matches_df.copy()
 
@@ -1617,6 +1755,23 @@ if check_password():
             if 'show_non_queued_only' in locals() and show_non_queued_only:
                 filtered_df = filtered_df[pd.isna(filtered_df['queue_position'])]
 
+            # Apply traction filter
+            if selected_traction != "All Traction Levels":
+                filtered_df = filtered_df[filtered_df['car_traction'] == selected_traction]
+
+            # Apply discount filter
+            if selected_discount == "Discounted Only":
+                filtered_df = filtered_df[filtered_df['is_discounted'] == True]
+            elif selected_discount == "Non-Discounted Only":
+                filtered_df = filtered_df[filtered_df['is_discounted'] == False]
+
+            # Apply queue count range filter
+            if 'queue_count_range' in locals() and queue_count_range != (0, 0):
+                filtered_df = filtered_df[
+                    (filtered_df['queue_count'] >= queue_count_range[0]) &
+                    (filtered_df['queue_count'] <= queue_count_range[1])
+                    ]
+
             # Sort by total score
             filtered_df = filtered_df.sort_values('total_score', ascending=False)
 
@@ -1630,7 +1785,8 @@ if check_password():
             if not filtered_df.empty:
                 # Prepare display DataFrame
                 display_df = filtered_df[[
-                    'car_code', 'price', 'model', 'make', 'year', 'kilometers', 'location',
+                    'car_code', 'price', 'final_price', 'is_discounted', 'car_traction', 'queue_count', 'model', 'make',
+                    'year', 'kilometers', 'location',
                     'requested', 'days_in_location', 'queue_position', 'cars_displayed', 'dealer_name', 'dealer_code',
                     'match_score', 'showroom_score', 'total_score'
                 ]].copy()
@@ -1642,6 +1798,10 @@ if check_password():
 
                 # Format columns
                 display_df['price'] = display_df['price'].apply(lambda x: f"EGP {x:,.0f}")
+                display_df['final_price'] = display_df['final_price'].apply(lambda x: f"EGP {x:,.0f}")
+                display_df['is_discounted'] = display_df['is_discounted'].apply(lambda x: "Yes" if x else "No")
+                display_df['queue_count'] = display_df['queue_count'].apply(
+                    lambda x: f"{int(x)}" if pd.notna(x) else "0")
                 display_df['kilometers'] = display_df['kilometers'].apply(lambda x: f"{x:,.0f} km")
                 display_df['days_in_location'] = display_df['days_in_location'].apply(
                     lambda x: f"{int(x)} days" if pd.notna(x) and x > 0 else "-")
@@ -1656,7 +1816,11 @@ if check_password():
                 # Rename columns for display
                 display_df = display_df.rename(columns={
                     'car_code': 'Car Code',
-                    'price': 'Price',
+                    'price': 'Original Price',
+                    'final_price': 'Final Price',
+                    'is_discounted': 'Discounted',
+                    'car_traction': 'Traction',
+                    'queue_count': 'Queue Count',
                     'model': 'Model',
                     'make': 'Make',
                     'year': 'Year',
@@ -1721,7 +1885,10 @@ if check_password():
                             st.write(f"• Make/Model: {match['make']} {match['model']}")
                             st.write(f"• Year: {match['year']}")
                             st.write(f"• Kilometers: {match['kilometers']:,.0f} km")
-                            st.write(f"• Price: EGP {match['price']:,.0f}")
+                            st.write(f"• Original Price: EGP {match['price']:,.0f}")
+                            st.write(f"• Final Price: EGP {match['final_price']:,.0f}")
+                            st.write(f"• Discounted: {'Yes' if match['is_discounted'] else 'No'}")
+                            st.write(f"• Traction: {match['car_traction']} ({match['queue_count']} in queue)")
                             st.write(f"• Location: {match['location']}")
                             st.write(f"• Requested: {match['requested']}")
                             if pd.notna(match['days_in_location']) and match['days_in_location'] > 0:
@@ -1886,7 +2053,8 @@ if check_password():
 
             with filter_col1:
                 # Make filter
-                makes = ["All Makes"] + sorted(live_cars_with_location['make'].dropna().unique().tolist())
+                unique_makes = live_cars_with_location['make'].dropna().unique()
+                makes = ["All Makes"] + sorted(unique_makes.tolist())
                 selected_make = st.selectbox("Make", makes)
 
             with filter_col2:
@@ -1913,7 +2081,8 @@ if check_password():
 
             with filter_col4:
                 # Location filter
-                locations = ["All Locations"] + sorted(live_cars_with_location['location_stage_name'].unique().tolist())
+                unique_locations = live_cars_with_location['location_stage_name'].dropna().unique()
+                locations = ["All Locations"] + sorted(unique_locations.tolist())
                 selected_location = st.selectbox("Location", locations)
 
             # Additional filters row with sale type
@@ -1922,8 +2091,8 @@ if check_password():
             with filter_col8:
                 # Sale type filter
                 if 'flash_sale_flag' in live_cars_with_location.columns:
-                    sale_types = ["All Sale Types"] + sorted(
-                        live_cars_with_location['flash_sale_flag'].dropna().unique().tolist())
+                    unique_sale_types = live_cars_with_location['flash_sale_flag'].dropna().unique()
+                    sale_types = ["All Sale Types"] + sorted(unique_sale_types.tolist())
                     selected_sale_type = st.selectbox("Sale Type", sale_types)
                 else:
                     selected_sale_type = "All Sale Types"
