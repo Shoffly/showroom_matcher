@@ -1246,10 +1246,19 @@ if check_password():
                         eligibility_row = eligibility_info.iloc[0]
                         showroom_displayed_count = eligibility_row.get('showroom_displayed_count', 999)
                         days_in_consignment = eligibility_row.get('days_in_consignment', -1)
+                        discount_eligibility_flag = eligibility_row.get('discount_eligibility_flag', False)
 
-                        # Check if car is eligible for discount based on criteria
-                        if (showroom_displayed_count < 2 and
-                                days_in_consignment >= 0 and days_in_consignment <= 14):
+                        # Debug logging for discount eligibility
+                        if queue_count == 0 and days_in_consignment == 0:
+                            print(f"DEBUG - Car {car['sf_vehicle_name']}:")
+                            print(f"  - showroom_displayed_count: {showroom_displayed_count}")
+                            print(f"  - days_in_consignment: {days_in_consignment}")
+                            print(f"  - queue_count: {queue_count}")
+                            print(f"  - discount_eligibility_flag: {discount_eligibility_flag}")
+
+                        # FIXED: Use the discount_eligibility_flag from database instead of manual calculation
+                        # The database already determines eligibility, so we should trust that
+                        if discount_eligibility_flag:
                             is_discounted = True
 
                             # Get discount price from pricing table
@@ -1261,14 +1270,44 @@ if check_password():
                                     speed_discount_price = pricing_row.get('speed_discount_price')
                                     consignment_price = pricing_row.get('consignment_price')
 
+                                    # Debug logging for pricing
+                                    if queue_count == 0 and days_in_consignment == 0:
+                                        print(f"  - speed_discount_price: {speed_discount_price}")
+                                        print(f"  - consignment_price: {consignment_price}")
+                                        print(f"  - is_discounted: {is_discounted}")
+
                                     # Use speed_discount_price if discounted, otherwise consignment_price
                                     if pd.notna(speed_discount_price):
                                         discount_price = speed_discount_price
                                     elif pd.notna(consignment_price):
                                         discount_price = consignment_price
+                                else:
+                                    # Debug: no pricing info found
+                                    if queue_count == 0 and days_in_consignment == 0:
+                                        print(f"  - No pricing info found in discount_pricing_df")
+                            else:
+                                # Debug: empty pricing dataframe
+                                if queue_count == 0 and days_in_consignment == 0:
+                                    print(f"  - discount_pricing_df is empty")
+                        else:
+                            # Debug: not eligible for discount
+                            if queue_count == 0 and days_in_consignment == 0:
+                                print(f"  - Not eligible for discount (discount_eligibility_flag = {discount_eligibility_flag})")
+                    else:
+                        # Debug: no eligibility info found
+                        if queue_count == 0 and days_in_consignment == 0:
+                            print(f"DEBUG - Car {car['sf_vehicle_name']}: No eligibility info found in discount_eligibility_df")
 
                 # Determine final price to display
                 final_price = discount_price if is_discounted and discount_price is not None else regular_price
+                
+                # Additional debug logging for final price determination
+                if queue_count == 0 and days_in_consignment == 0:
+                    print(f"  - final_price: {final_price}")
+                    print(f"  - discount_price: {discount_price}")
+                    print(f"  - regular_price: {regular_price}")
+                    print(f"  - Final is_discounted: {is_discounted}")
+                    print("---")
 
                 # Calculate scores for each dealer
                 for dealer_code in all_dealers:
