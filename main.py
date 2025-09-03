@@ -1581,14 +1581,7 @@ if check_password():
 
         with main_tab1:
             st.subheader("🎯 Showroom Matching Results")
-            st.info("🚗 **Matching only live cars** - same vehicles shown in the Live Cars tab")
-            st.info("🚫 **Dealer D-0200 excluded** from all matching recommendations")
-            st.info("📋 **Queue Position**: Shows dealer's position in queue (if any) - all dealers shown by default")
-            st.info("🏪 **Cars Displayed**: Shows how many cars each dealer currently has in their showroom")
-            st.info("🚗 **Car Traction**: High (3+ queued), Low (1-2 queued), No (0 queued)")
-            st.info(
-                "💰 **Discount Pricing**: Shows discounted price when eligible (showroom_displayed_count < 2 and days_in_consignment 0-14)")
-
+           
             # Filtering section
             st.write("**Filter Options:** ⚡ *Instant filtering on cached data*")
             col1, col2, col3, col4, col5 = st.columns(5)
